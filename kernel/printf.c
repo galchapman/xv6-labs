@@ -133,3 +133,20 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
+struct stackframe {
+    struct stackframe* prev;
+    uint64 addr;
+};
+
+void
+backtrace(void) {
+  printf("backtrace:\n");
+  struct stackframe *frame = (void*)((char*)r_fp() - 16);
+  while (frame != 0) {
+    printf("%p\n", frame->addr);
+    if (frame->prev < frame)
+        break;
+    frame = (void*)((char*)frame->prev - 16);
+  }
+}
