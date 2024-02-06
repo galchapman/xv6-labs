@@ -74,8 +74,32 @@ sys_sleep(void)
 int
 sys_pgaccess(void)
 {
-  // lab pgtbl: your code here.
-  return 0;
+    uint8 buf[1024] = { 0 };
+    struct proc* p = myproc();
+
+    uint64 u_base;
+    int len;
+    uint64 u_mask;
+
+    argaddr(0, &u_base);
+    argint(1, &len);
+    argaddr(2, &u_mask);
+
+    if (len > sizeof(buf) * 8) {
+        return -1;
+    }
+
+    for (uint i = 0; i < (len < PGSIZE ? len : PGSIZE); ++i) {
+        if (accessed(p->pagetable, u_base + PGSIZE * i)) {
+            buf[i / 8] |= (1 << (i % 8)); // set i's bit in data
+        }
+    }
+
+    if (copyout(p->pagetable, u_mask, (char*)buf, (len-1) / 8 + 1) < 0) {
+        return -1;
+    }
+
+    return 0;
 }
 #endif
 
