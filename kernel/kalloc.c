@@ -23,11 +23,17 @@ struct {
   struct run *freelist;
 } kmem;
 
+uint64 total_pages;
+uint64 used_pages;
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
   freerange(end, (void*)PHYSTOP);
+
+  total_pages = ((uint64)PHYSTOP - (uint64)end) / PGSIZE + 1;
+  used_pages = 0;
 }
 
 void
@@ -59,6 +65,7 @@ kfree(void *pa)
   acquire(&kmem.lock);
   r->next = kmem.freelist;
   kmem.freelist = r;
+  --used_pages;
   release(&kmem.lock);
 }
 
@@ -74,6 +81,7 @@ kalloc(void)
   r = kmem.freelist;
   if(r)
     kmem.freelist = r->next;
+  ++used_pages;
   release(&kmem.lock);
 
   if(r)

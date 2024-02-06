@@ -8,6 +8,9 @@
 
 struct cpu cpus[NCPU];
 
+struct spinlock nproc_lock;
+uint64 nproc = 0;
+
 struct proc proc[NPROC];
 
 struct proc *initproc;
@@ -51,6 +54,8 @@ procinit(void)
   
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  initlock(&nproc_lock, "nproc_lock");
+  nproc = 0;
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       p->state = UNUSED;
@@ -125,6 +130,10 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  acquire(&nproc_lock);
+  ++nproc;
+  release(&nproc_lock);
+
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -169,6 +178,10 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  acquire(&nproc_lock);
+  --nproc;
+  release(&nproc_lock);
 }
 
 // Create a user page table for a given process, with no user memory,
