@@ -449,3 +449,35 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+int accessed(pagetable_t pagetable, uint64 va) {
+    pte_t *pte = walk(pagetable, va, 0);
+    if (pte == 0 || !(*pte & PTE_A)) {
+        return 0;
+    }
+
+    *pte ^= PTE_A; // unset accessed bit
+    return 1;
+}
+
+void visit_pte(int level, pte_t* pte) {
+    if (level > 2 || level < 0) return;
+
+    for (int i = 0; i <= PXMASK; ++i) {
+        if (!(pte[i] & PTE_V)) continue;
+
+        for (int j = 0; j <= level; ++j) {
+            printf(" ..");
+        }
+
+        uint64 child = PTE2PA(pte[i]);
+
+        printf("%d: pte %p pa %p\n", i, pte[i], child);
+        visit_pte(level + 1, (pte_t*)child);
+    }
+}
+
+void vmprint(pagetable_t pagetable) {
+    printf("page table %p\n");
+    visit_pte(0, pagetable);
+}
