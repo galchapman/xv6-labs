@@ -55,6 +55,7 @@ procinit(void)
       initlock(&p->lock, "proc");
       p->state = UNUSED;
       p->kstack = KSTACK((int) (p - proc));
+      initlock(&p->alarm_info.lock, "proc.alarm.lock");
   }
 }
 
@@ -132,6 +133,11 @@ found:
     return 0;
   }
 
+  if ((p->alarm_info.trapframe = (struct trapframe *)kalloc()) == 0) {
+    freeproc(p);
+    release(&p->lock);
+  }
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
@@ -146,6 +152,10 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  p->alarm_info.counter = p->alarm_info.interval = 0;
+  p->alarm_info.handler = 0;
+  p->alarm_info.in_handler = 0;
+
   return p;
 }
 
@@ -158,6 +168,9 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  if (p->alarm_info.trapframe)
+    kfree((void*)p->alarm_info.trapframe);
+  p->alarm_info.trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
