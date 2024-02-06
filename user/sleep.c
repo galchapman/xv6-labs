@@ -5,7 +5,7 @@
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
-        fprintf(STDERR, "usage: %p <seconds>\n", argv[0]);
+        fprintf(STDERR, "usage: %s <seconds>\n", argv[0]);
     }
 
     sleep(atoi(argv[1]));

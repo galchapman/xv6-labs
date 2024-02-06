@@ -52,7 +52,7 @@ void visit_directory(int fd, const char* exp, char path[]) {
 
 int main(int argc, char **argv) {
     if (argc != 3) {
-        fprintf(2, "usage: %p <path> <filename>\n", argv[0]);
+        fprintf(2, "usage: %s <path> <filename>\n", argv[0]);
         exit(1);
     }
 
