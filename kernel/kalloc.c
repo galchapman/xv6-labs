@@ -77,6 +77,8 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
+  push_off();
+
   int id = cpuid();
 
   struct kmem *cpu_mem = &mem_cpus[id];
@@ -86,6 +88,8 @@ kfree(void *pa)
   r->next = cpu_mem->freelist;
   cpu_mem->freelist = r;
   release(&cpu_mem->lock);
+
+  pop_off();
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -95,6 +99,8 @@ void *
 kalloc(void)
 {
   struct run *r;
+
+  push_off();
 
   int id = cpuid();
 
@@ -112,6 +118,8 @@ kalloc(void)
         break;
     }
   }
+
+  pop_off();
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
