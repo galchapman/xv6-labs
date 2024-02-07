@@ -9,7 +9,9 @@
 #include "riscv.h"
 #include "defs.h"
 
-void freerange(void *pa_start, void *pa_end);
+struct run;
+
+void freerange(void *pa_start, void *pa_end, struct run** freelist);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -18,25 +20,44 @@ struct run {
   struct run *next;
 };
 
-struct {
+struct kmem {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+} mem_cpus[NCPU];
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  uint64 last_addr = PGROUNDUP((uint64)end);
+  uint64 step = PGROUNDDOWN((PGROUNDDOWN(PHYSTOP) - last_addr) / NCPU);
+  for (int i = 0; i < NCPU; ++i) {
+    struct kmem* cpu_mem = &mem_cpus[i];
+
+    initlock(&cpu_mem->lock, "kmem.lock");
+    acquire(&cpu_mem->lock);
+    freerange((void*)(last_addr + i * step),
+            i == NCPU-1 ? (void*)PHYSTOP : (void*)(last_addr + (i+1) * step),
+            &cpu_mem->freelist);
+    release(&cpu_mem->lock);
+  }
 }
 
 void
-freerange(void *pa_start, void *pa_end)
+freerange(void *pa_start, void *pa_end, struct run** freelist)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    kfree(p);
+  *freelist = (void*)0;
+  if (p + PGSIZE > (char*)pa_end)
+    return; // no memory
+
+  struct run *r = (void*)p;
+  *freelist = r;
+  for(p += PGSIZE; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
+    r->next = (void*)p;
+    r = r->next;
+  }
+  r->next = (void*)0;
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -56,10 +77,15 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  int id = cpuid();
+
+  struct kmem *cpu_mem = &mem_cpus[id];
+
+
+  acquire(&cpu_mem->lock);
+  r->next = cpu_mem->freelist;
+  cpu_mem->freelist = r;
+  release(&cpu_mem->lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -70,11 +96,22 @@ kalloc(void)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+  int id = cpuid();
+
+  // Pick from current cpu list if not empty
+  // Otherwise borrow from next avilable cpu free list.
+  for (int i = 0; i < NCPU; ++i) {
+    struct kmem *cpu_mem = &mem_cpus[(id + i) % NCPU];
+    acquire(&cpu_mem->lock);
+    r = cpu_mem->freelist;
+    if(r) {
+        cpu_mem->freelist = r->next;
+    }
+    release(&cpu_mem->lock);
+    if (r) {
+        break;
+    }
+  }
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
