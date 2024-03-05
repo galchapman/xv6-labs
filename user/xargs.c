@@ -55,6 +55,9 @@ int main(int argc, char** argv) {
 
         }
 
+		/* set last argument to be NULL */
+		args[arg_count] = NULL;
+
         if (fork() == 0) {
             /* call exec */
             exec(args[0], args);
