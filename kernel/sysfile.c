@@ -256,7 +256,7 @@ create(char *path, short type, short major, short minor)
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
     ilock(ip);
-    if(type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
+    if(type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE || ip->type == T_SYMLINK))
       return ip;
     iunlockput(ip);
     return 0;
@@ -328,6 +328,39 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
+    if(ip->type == T_DIR && omode != O_RDONLY){
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
+
+  if (ip->type == T_SYMLINK && (omode & O_NOFOLLOW)) {
+    // open symlink
+  } else if (ip->type == T_SYMLINK) {
+    // follow symlink
+    char path[MAXPATH];
+    for (int i = 0; i < MAX_FOLLOW; ++i) {
+      readi(ip, 0, (uint64)path, 0, sizeof(path));
+      iunlockput(ip);
+      /* open next file */
+      ip = namei(path);
+      if(ip == 0){
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      if (ip->type != T_SYMLINK) {
+        break;
+      }
+
+      if (i == MAX_FOLLOW - 1) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+    }
+    // test direcories are opend only as readonly
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -501,5 +534,30 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void) {
+  char target[MAXPATH];
+  char path[MAXPATH];
+  struct inode *ip;
+
+  begin_op();
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0 || (ip = create(path, T_SYMLINK, 0, 0)) == 0) {
+    end_op();
+    return -1;
+  }
+
+  if (writei(ip, 0, (uint64)target, 0, MAXPATH) < MAXPATH) {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+
+  end_op();
   return 0;
 }
