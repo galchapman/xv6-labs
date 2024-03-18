@@ -23,21 +23,42 @@
 #include "fs.h"
 #include "buf.h"
 
-#define BCACHE_TABLE_SIZE NBUF
+#define BCACHE_TABLE_SIZE 19
+#define BCACHE_BUFFERS 100
+
+struct bcache_hash_entry {
+    struct spinlock lock;
+    struct buf *head;
+    struct buf *tail;
+};
 
 struct {
-//   struct spinlock lock;
-  struct buf buf[BCACHE_TABLE_SIZE];
+  struct spinlock lock;
+  struct buf *free_list;
+  struct buf buf[BCACHE_BUFFERS];
+  struct bcache_hash_entry ht[BCACHE_TABLE_SIZE];
 } bcache;
 
 void
 binit(void)
 {
-//   initlock(&bcache.lock, "bcache");
-  for (struct buf *b = bcache.buf; b < bcache.buf+BCACHE_TABLE_SIZE; b++) {
+  initlock(&bcache.lock, "bcache");
+  struct buf* last = 0;
+  for (struct buf *b = bcache.buf; b < bcache.buf+BCACHE_BUFFERS; b++) {
     b->refcnt = 0;
-    initlock(&b->ht_lock, "bcache.ht_lock");
+    b->prev = 0; // bufs in free list dont need prev
+    if (last != 0) {
+        last->next = b;
+    }
+    last = b;
     initsleeplock(&b->lock, "buffer");
+  }
+  last->next = 0;
+  bcache.free_list = &bcache.buf[0];
+
+  for (struct bcache_hash_entry *he = bcache.ht; he < bcache.ht + BCACHE_TABLE_SIZE; ++he) {
+    initlock(&he->lock, "bcache.ht.lock");
+    he->head = he->tail = 0;
   }
 }
 
@@ -52,58 +73,49 @@ bcache_hash(uint dev, uint blockno) {
 static struct buf*
 bget(uint dev, uint blockno)
 {
-//   acquire(&bcache.lock);
-  struct buf *b;
+  struct bcache_hash_entry *entry;
+  struct buf **b;
 
   // loop over buffers starting with hash
-  b = bcache.buf + bcache_hash(dev, blockno);
-  for (uint i = 0; i < BCACHE_TABLE_SIZE; ++i) {
-    if (b == bcache.buf+BCACHE_TABLE_SIZE) {
-        b = bcache.buf;
-    }
+  entry = &bcache.ht[bcache_hash(dev, blockno)];
+  acquire(&entry->lock);
 
-    acquire(&b->ht_lock);
-    if (b->blockno == blockno && b->dev == dev) {
-        // Found entry
-        ++b->refcnt;
-        release(&b->ht_lock);
-        // release(&bcache.lock);
-        acquiresleep(&b->lock);
-        return b;
+  for (b = &(entry->head); *b != 0; b = &((*b)->next)) {
+    if ((*b)->next != 0 && (*b)->next->prev != *b) {
+        panic("Invalid link list\n");
     }
-
-    release(&b->ht_lock);
-    ++b;
+    if((*b)->dev == dev && (*b)->blockno == blockno){
+      (*b)->refcnt++;
+      release(&entry->lock);
+      acquiresleep(&(*b)->lock);
+      return *b;
+    }
   }
 
-//   acquire(&bcache.lock);
-
-  // Search for empty spot to insert buffer
-  b = bcache.buf + bcache_hash(dev, blockno);
-  for (uint i = 0; i < BCACHE_TABLE_SIZE; ++i) {
-    if (b == bcache.buf+BCACHE_TABLE_SIZE) {
-        b = bcache.buf;
-    }
-    acquire(&b->ht_lock);
-
-    if (b->refcnt == 0) {
-        b->dev = dev;
-        b->blockno = blockno;
-        b->refcnt = 1;
-        b->valid = 0;
-        release(&b->ht_lock);
-        // release(&bcache.lock);
-        acquiresleep(&b->lock);
-        return b;
-    }
-
-    release(&b->ht_lock);
-    ++b;
+  // alocate new buffer (b points to last next pointer)
+  acquire(&bcache.lock);
+  *b = bcache.free_list;
+  bcache.free_list = bcache.free_list->next;
+  if (*b == 0) {
+    panic("bget: no buffers");
   }
 
-//   release(&bcache.lock);
+  release(&bcache.lock);
 
-  panic("bget: no buffers");
+  (*b)->next = 0;
+  (*b)->prev = entry->tail;
+  entry->tail = *b;
+
+  (*b)->dev = dev;
+  (*b)->blockno = blockno;
+  (*b)->valid = 0;
+  (*b)->refcnt = 1;
+
+  release(&entry->lock);
+
+  acquiresleep(&(*b)->lock);
+
+  return *b;
 }
 
 // Return a locked buf with the contents of the indicated block.
@@ -139,28 +151,48 @@ brelse(struct buf *b)
 
   releasesleep(&b->lock);
 
+  struct bcache_hash_entry * entry = &bcache.ht[bcache_hash(b->dev, b->blockno)];
 
-//   acquire(&bcache.lock);
-  acquire(&b->ht_lock);
+  acquire(&entry->lock);
   --b->refcnt;
-  release(&b->ht_lock);
-//   release(&bcache.lock);
+
+  if (b->refcnt == 0) {
+    // update hash entry list
+    if (b->prev)
+        b->prev->next = b->next;
+    else // same as if (entry->head == b)
+        entry->head = b->next;
+
+    if (b->next)
+        b->next->prev = b->prev;
+    else
+        entry->tail = b->prev;
+
+    // update free list
+    acquire(&bcache.lock);
+
+    b->next = bcache.free_list;
+    b->prev = 0;
+    bcache.free_list = b;
+
+    release(&bcache.lock);
+  }
+
+  release(&entry->lock);
 }
 
 void
 bpin(struct buf *b) {
-//   acquire(&bcache.lock);
-  acquire(&b->ht_lock);
+  struct bcache_hash_entry * entry = &bcache.ht[bcache_hash(b->dev, b->blockno)];
+  acquire(&entry->lock);
   ++b->refcnt;
-  release(&b->ht_lock);
-//   release(&bcache.lock);
+  release(&entry->lock);
 }
 
 void
 bunpin(struct buf *b) {
-//   acquire(&bcache.lock);
-  acquire(&b->ht_lock);
+  struct bcache_hash_entry * entry = &bcache.ht[bcache_hash(b->dev, b->blockno)];
+  acquire(&entry->lock);
   --b->refcnt;
-  release(&b->ht_lock);
-//   release(&bcache.lock);
+  release(&entry->lock);
 }

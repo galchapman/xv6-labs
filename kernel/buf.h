@@ -5,7 +5,9 @@ struct buf {
   uint blockno;
   struct sleeplock lock;
   uint refcnt;
-  struct spinlock ht_lock;
+  // link list data
+  struct buf* next;
+  struct buf* prev;
   uchar data[BSIZE];
 };
 
