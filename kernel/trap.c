@@ -67,11 +67,42 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (r_scause() == 0xf) {
+    // page
+    uint64 address = PGROUNDDOWN(r_stval());
+    if (address >= MAXVA) {
+      goto kill;
+    }
+    pte_t* pte = walk(p->pagetable, address, 0);
+    if (pte == 0) {
+      goto kill;
+    }
+    // uint64 pa = PTE2PA(*pte);
+    uint64 flags = PTE_FLAGS(*pte);
+    if ((flags && PTE_U) && (flags && PTE_V) && (flags & PTE_RSW0)) { // COW
+      uint64 new_page = cow_make_writeable(PTE2PA(*pte));
+      if (new_page == 0) { // no memory
+        goto kill;
+      }
+      flags &= ~PTE_RSW0;
+      flags |= PTE_W;
+      uvmunmap(p->pagetable, address, 1, 0);
+      if (mappages(p->pagetable, address, PGSIZE, new_page, flags) != 0) {
+        goto kill;
+      }
+      goto skip_kill;
+    }
+    goto kill;
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    setkilled(p);
+    goto kill;
   }
+  goto skip_kill;
+kill:
+  printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+  printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+  setkilled(p);
+skip_kill:
+
 
   if(killed(p))
     exit(-1);

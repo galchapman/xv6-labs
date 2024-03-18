@@ -63,6 +63,8 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+void            cow_increfcnt(uint64);
+uint64          cow_make_writeable(uint64);
 
 // log.c
 void            initlog(int, struct superblock*);

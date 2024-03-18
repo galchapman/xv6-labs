@@ -313,29 +313,46 @@ int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
-  uint64 pa, i;
+  uint64 pa, va;
   uint flags;
   char *mem;
 
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
+  for(va = 0; va < sz; va += PGSIZE){
+    if((pte = walk(old, va, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    if (flags & PTE_U) {
+      if (flags & PTE_W) {
+        flags &= ~PTE_W;
+        flags |= PTE_RSW0; // mark copy on write
+      }
+      cow_increfcnt(pa);
+      if(mappages(new, va, PGSIZE, (uint64)pa, flags) != 0){
+        kfree((void*)pa);
+        goto err;
+      }
+      // update parent flags
+      uvmunmap(old, va, 1, 0);
+      if (mappages(old, va, PGSIZE, pa, flags) != 0) {
+        goto err;
+      }
+    } else {
+      if((mem = kalloc()) == 0)
+        goto err;
+      memmove(mem, (char*)pa, PGSIZE);
+      if(mappages(new, va, PGSIZE, (uint64)mem, flags) != 0){
+        kfree(mem);
+        goto err;
+      }
     }
   }
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(new, 0, va / PGSIZE, 1);
   return -1;
 }
 
@@ -366,8 +383,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     if(va0 >= MAXVA)
       return -1;
     pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
-       (*pte & PTE_W) == 0)
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+      return -1;
+    if (*pte & PTE_RSW0) {
+      // COW
+      uint64 new_page = cow_make_writeable(PTE2PA(*pte));
+      if (new_page == 0) {
+        return -1;
+      }
+      uint64 flags = PTE_FLAGS(*pte);
+      flags &= ~PTE_RSW0;
+      flags |= PTE_W;
+      uvmunmap(pagetable, va0, 1, 0);
+      if (mappages(pagetable, va0, PGSIZE, new_page, flags) != 0) {
+        return -1;
+      }
+    }
+    if ((*pte & PTE_W) == 0)
       return -1;
     pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);
