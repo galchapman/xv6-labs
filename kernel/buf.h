@@ -6,8 +6,6 @@ struct buf {
   struct sleeplock lock;
   uint refcnt;
   // link list data
-  struct buf* next;
-  struct buf* prev;
   uchar data[BSIZE];
 };
 
